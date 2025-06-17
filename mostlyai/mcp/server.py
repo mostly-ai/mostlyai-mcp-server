@@ -15,7 +15,10 @@
 from typing import Literal
 
 import click
-from fastmcp import FastMCP
+from fastmcp import FastMCP, Context
+import requests
+import asyncio
+from fastmcp.server.dependencies import get_context
 
 mcp = FastMCP(name="MOSTLY AI MCP Server")
 
@@ -25,6 +28,39 @@ def get_service_info() -> dict[str, str]:
     return {
         "version": "4.7.2",
         "assistant": True,
+    }
+
+
+@mcp.resource(name="mostlyai-docs", description="MOSTLY AI SDK Documentation", uri="https://mostly-ai.github.io/mostlyai/llms-full.txt")
+def get_mostlyai_docs() -> str:
+    response = requests.get("https://mostly-ai.github.io/mostlyai/llms-full.txt")
+    response.raise_for_status()  # raise an exception for bad status codes
+    return response.text
+
+
+@mcp.tool(description="Simulate a training process with progress updates")
+async def train(model_name: str) -> dict[str, str]:
+    # get the context for progress updates
+    ctx = get_context()
+    
+    # simulate 20 seconds of training with progress updates every second
+    for i in range(20):
+        # calculate progress percentage
+        progress = (i + 1) * 5  # 5% increments
+        
+        # report progress
+        await ctx.info(f"Training {model_name}: {progress}% complete")
+        
+        # simulate work
+        await asyncio.sleep(1)
+    
+    # report completion
+    await ctx.info(f"Training of {model_name} completed successfully!")
+    
+    return {
+        "status": "completed",
+        "model": model_name,
+        "message": "Training completed successfully"
     }
 
 
