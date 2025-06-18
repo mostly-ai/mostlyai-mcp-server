@@ -474,8 +474,8 @@ wheels = [
 
 [[package]]
 name = "fastmcp"
-version = "2.8.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.0.1.dev1361+1202aa6"
+source = { git = "https://github.com/mostly-ai/fastmcp.git?rev=dev#1202aa6a921795da194aa5c95ded80e01b649cae" }
 dependencies = [
     { name = "authlib" },
     { name = "exceptiongroup" },
@@ -485,10 +485,6 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "rich" },
     { name = "typer" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/8d/a3/d5b2c47b25d13cca8108e077bf4a72b255b113fb525f4c22ce9ca5af9b08/fastmcp-2.8.0.tar.gz", hash = "sha256:8a6427ece23d0a324d4be2043598c8b89a91b2b5688873d8ae1e7aeaa7960513", size = 2554559, upload-time = "2025-06-11T01:31:24.069Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/2c/05/b9b0ee091578ff37da8ef0bee8fff80bed95daff61834982a6064e3e327f/fastmcp-2.8.0-py3-none-any.whl", hash = "sha256:772468e98dacd55ab3381f49dd2583341c41b0e5ef0d9c7620fd43833d949c0c", size = 137492, upload-time = "2025-06-11T01:31:22.195Z" },
 ]
 
 [[package]]
@@ -1035,8 +1031,8 @@ wheels = [
 
 [[package]]
 name = "mcp"
-version = "1.9.4"
-source = { registry = "https://pypi.org/simple" }
+version = "0.0.1.dev495+c0c2710"
+source = { git = "https://github.com/mostly-ai/mcp.git?rev=dev#c0c2710e42c75c4c99a5d99054b728fde99d957f" }
 dependencies = [
     { name = "anyio" },
     { name = "httpx" },
@@ -1047,10 +1043,6 @@ dependencies = [
     { name = "sse-starlette" },
     { name = "starlette" },
     { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/06/f2/dc2450e566eeccf92d89a00c3e813234ad58e2ba1e31d11467a09ac4f3b9/mcp-1.9.4.tar.gz", hash = "sha256:cfb0bcd1a9535b42edaef89947b9e18a8feb49362e1cc059d6e7fc636f2cb09f", size = 333294, upload-time = "2025-06-12T08:20:30.158Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/97/fc/80e655c955137393c443842ffcc4feccab5b12fa7cb8de9ced90f90e6998/mcp-1.9.4-py3-none-any.whl", hash = "sha256:7fcf36b62936adb8e63f89346bccca1268eeca9bf6dfb562ee10b1dfbda9dac0", size = 130232, upload-time = "2025-06-12T08:20:28.551Z" },
 ]
 
 [[package]]
@@ -1308,7 +1300,7 @@ docs = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastmcp", specifier = ">=2.8.0" },
+    { name = "fastmcp", git = "https://github.com/mostly-ai/fastmcp.git?rev=dev" },
     { name = "mostlyai", specifier = ">=4.7.7" },
 ]
 
