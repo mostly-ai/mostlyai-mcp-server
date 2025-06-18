@@ -11,7 +11,9 @@ RUN apk add --no-cache uv
 USER root
 
 COPY ./uv.lock ./pyproject.toml ./
-RUN uv sync --no-editable --no-install-package mostlyai --no-install-project
+RUN apk add --no-cache --virtual core-py-build-deps git \
+  && uv sync --no-editable --no-install-package mostlyai --no-install-project \
+  && apk del core-py-build-deps git
 
 COPY mostlyai ./mostlyai
 COPY README.md ./
