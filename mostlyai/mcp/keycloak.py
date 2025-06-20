@@ -134,6 +134,7 @@ class KeycloakClientSettings(BaseSettings):
 
 class KeycloakOAuthProvider(OAuthProvider):
     def __init__(self, host: str, port: int):
+        logger.info(f"initializing keycloak OAuth provider for {host}:{port}")
         # since MCP server itself is a client of Keycloak, the client root URL is the same as the MCP server public URL
         mcp_server_public_url = AnyHttpUrl(os.getenv("MCP_KEYCLOAK_CLIENT_ROOT_URL", f"http://{host}:{port}"))
         self.settings = KeycloakClientSettings(client_root_url=mcp_server_public_url)
@@ -164,17 +165,47 @@ class KeycloakOAuthProvider(OAuthProvider):
 
         # For revoking associated tokens
         self._mcp_refresh_to_mcp_access_map: dict[str, str] = {}
+        
+        # track active HTTP requests for cleanup
+        self._active_http_requests = set()
+        logger.info("keycloak OAuth provider initialized successfully")
+
+    async def cleanup(self):
+        """Clean up resources during shutdown."""
+        logger.info("cleaning up keycloak OAuth provider")
+        logger.info(f"active HTTP requests during cleanup: {len(self._active_http_requests)}")
+        
+        # clear all token mappings
+        self.clients.clear()
+        self.auth_codes.clear()
+        self.access_token_objs.clear()
+        self.refresh_token_objs.clear()
+        self.state_mapping.clear()
+        self._mcp_access_to_keycloak_access_map.clear()
+        self._mcp_refresh_to_keycloak_access_map.clear()
+        self._mcp_refresh_to_keycloak_refresh_map.clear()
+        self._auth_code_to_keycloak_access_map.clear()
+        self._auth_code_to_keycloak_refresh_map.clear()
+        self._mcp_refresh_to_mcp_access_map.clear()
+        
+        if self._active_http_requests:
+            logger.warning(f"found {len(self._active_http_requests)} active HTTP requests during cleanup")
+            
+        logger.info("keycloak OAuth provider cleanup completed")
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        logger.info(f"get_client: {client_id}")
+        logger.debug(f"get_client: {client_id}")
         # fetch if the client is already dynamically registered, otherwise try to fetch the static client info
-        return self.clients.get(client_id, CLIENT_ID_TO_CLIENT_INFO.get(client_id))
+        result = self.clients.get(client_id, CLIENT_ID_TO_CLIENT_INFO.get(client_id))
+        logger.debug(f"get_client result: {'found' if result else 'not found'}")
+        return result
 
     async def register_client(self, client_info: OAuthClientInformationFull):
-        logger.info(f"register_client: {client_info}")
+        logger.info(f"register_client: {client_info.client_id}")
         self.clients[client_info.client_id] = client_info
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
+        logger.info(f"authorize: client={client.client_id}, redirect_uri={params.redirect_uri}")
         state = params.state or secrets.token_hex(16)
         # Store the state mapping
         self.state_mapping[state] = {
@@ -194,79 +225,105 @@ class KeycloakOAuthProvider(OAuthProvider):
             f"&state={state}"
         )
 
+        logger.info(f"authorize: redirecting to keycloak auth URL")
         return auth_url
 
     async def handle_callback(self, code: str, state: str) -> str:
-        state_data = self.state_mapping.get(state)
-        if not state_data:
-            raise HTTPException(400, "Invalid state parameter")
+        logger.info(f"handle_callback: code={'present' if code else 'missing'}, state={state}")
+        request_id = f"callback_{secrets.token_hex(8)}"
+        self._active_http_requests.add(request_id)
+        
+        try:
+            state_data = self.state_mapping.get(state)
+            if not state_data:
+                logger.error(f"invalid state parameter: {state}")
+                raise HTTPException(400, "Invalid state parameter")
 
-        redirect_uri = state_data["redirect_uri"]
-        code_challenge = state_data["code_challenge"]
-        redirect_uri_provided_explicitly = state_data["redirect_uri_provided_explicitly"] == "True"
-        client_id = state_data["client_id"]
+            redirect_uri = state_data["redirect_uri"]
+            code_challenge = state_data["code_challenge"]
+            redirect_uri_provided_explicitly = state_data["redirect_uri_provided_explicitly"] == "True"
+            client_id = state_data["client_id"]
 
-        # Exchange code for token with Keycloak
-        async with create_mcp_http_client() as client:
-            response = await client.post(
-                self.settings.keycloak_token_url,
-                data={
-                    "grant_type": "authorization_code",
-                    "client_id": self.settings.client_id,
-                    "client_secret": self.settings.client_secret,
-                    "code": code,
-                    "redirect_uri": self.settings.client_redirect_uris,
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
+            logger.info(f"exchanging code for token with keycloak, client_id={client_id}")
+            # Exchange code for token with Keycloak
+            async with create_mcp_http_client() as client:
+                logger.debug("sending token exchange request to keycloak")
+                response = await client.post(
+                    self.settings.keycloak_token_url,
+                    data={
+                        "grant_type": "authorization_code",
+                        "client_id": self.settings.client_id,
+                        "client_secret": self.settings.client_secret,
+                        "code": code,
+                        "redirect_uri": self.settings.client_redirect_uris,
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
 
-            if response.status_code != 200:
-                raise HTTPException(400, f"Failed to exchange code for token: {response.text}")
+                logger.info(f"keycloak token exchange response: {response.status_code}")
+                if response.status_code != 200:
+                    error_msg = f"Failed to exchange code for token: {response.text}"
+                    logger.error(error_msg)
+                    raise HTTPException(400, error_msg)
 
-            data = response.json()
-            if "error" in data:
-                raise HTTPException(400, data.get("error_description", data["error"]))
+                data = response.json()
+                if "error" in data:
+                    error_msg = data.get("error_description", data["error"])
+                    logger.error(f"keycloak token exchange error: {error_msg}")
+                    raise HTTPException(400, error_msg)
 
-            keycloak_access_token = data["access_token"]
-            keycloak_refresh_token = data["refresh_token"]
+                keycloak_access_token = data["access_token"]
+                keycloak_refresh_token = data["refresh_token"]
+                logger.debug("keycloak tokens received successfully")
 
-            # Create MCP authorization code
-            new_code = f"mcp_{secrets.token_hex(16)}"
-            self.auth_codes[new_code] = AuthorizationCode(
-                code=new_code,
-                client_id=client_id,
-                redirect_uri=AnyUrl(redirect_uri),
-                redirect_uri_provided_explicitly=redirect_uri_provided_explicitly,
-                expires_at=time.time() + DEFAULT_AUTH_CODE_EXPIRY_SECONDS,
-                scopes=[self.settings.mcp_scope],
-                code_challenge=code_challenge,
-            )
+                # Create MCP authorization code
+                new_code = f"mcp_{secrets.token_hex(16)}"
+                self.auth_codes[new_code] = AuthorizationCode(
+                    code=new_code,
+                    client_id=client_id,
+                    redirect_uri=AnyUrl(redirect_uri),
+                    redirect_uri_provided_explicitly=redirect_uri_provided_explicitly,
+                    expires_at=time.time() + DEFAULT_AUTH_CODE_EXPIRY_SECONDS,
+                    scopes=[self.settings.mcp_scope],
+                    code_challenge=code_challenge,
+                )
 
-            # Store Keycloak token - we'll map the MCP token to this later
-            self.access_token_objs[keycloak_access_token] = AccessToken(
-                token=keycloak_access_token,
-                client_id=client_id,
-                scopes=self.settings.keycloak_scope.split(),
-                expires_at=None,  # decided by Keycloak server
-            )
+                # Store Keycloak token - we'll map the MCP token to this later
+                self.access_token_objs[keycloak_access_token] = AccessToken(
+                    token=keycloak_access_token,
+                    client_id=client_id,
+                    scopes=self.settings.keycloak_scope.split(),
+                    expires_at=None,  # decided by Keycloak server
+                )
 
-            self.refresh_token_objs[keycloak_refresh_token] = RefreshToken(
-                token=keycloak_refresh_token,
-                client_id=client_id,
-                scopes=self.settings.keycloak_scope.split(),
-                expires_at=None,  # decided by Keycloak server
-            )
+                self.refresh_token_objs[keycloak_refresh_token] = RefreshToken(
+                    token=keycloak_refresh_token,
+                    client_id=client_id,
+                    scopes=self.settings.keycloak_scope.split(),
+                    expires_at=None,  # decided by Keycloak server
+                )
 
-            self._auth_code_to_keycloak_access_map[new_code] = keycloak_access_token
-            self._auth_code_to_keycloak_refresh_map[new_code] = keycloak_refresh_token
+                self._auth_code_to_keycloak_access_map[new_code] = keycloak_access_token
+                self._auth_code_to_keycloak_refresh_map[new_code] = keycloak_refresh_token
 
-        self.state_mapping.pop(state, None)
-        return construct_redirect_uri(redirect_uri, code=new_code, state=state)
+            self.state_mapping.pop(state, None)
+            redirect_url = construct_redirect_uri(redirect_uri, code=new_code, state=state)
+            logger.info(f"handle_callback successful, redirecting to: {redirect_url}")
+            return redirect_url
+        except Exception as e:
+            logger.exception(f"error in handle_callback: {str(e)}")
+            raise
+        finally:
+            self._active_http_requests.discard(request_id)
+            logger.debug(f"handle_callback finished, request_id: {request_id}")
 
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
     ) -> AuthorizationCode | None:
-        return self.auth_codes.get(authorization_code)
+        logger.debug(f"load_authorization_code: {authorization_code[:10]}****")
+        result = self.auth_codes.get(authorization_code)
+        logger.debug(f"load_authorization_code result: {'found' if result else 'not found'}")
+        return result
 
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
@@ -389,29 +446,41 @@ class KeycloakOAuthProvider(OAuthProvider):
 
         # refresh keycloak tokens
         logger.info("refreshing keycloak tokens")
-        async with create_mcp_http_client() as http_client:
-            response = await http_client.post(
-                self.settings.keycloak_token_url,
-                data={
-                    "grant_type": "refresh_token",
-                    "client_id": self.settings.client_id,
-                    "client_secret": self.settings.client_secret,
-                    "refresh_token": keycloak_refresh_token,
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
+        request_id = f"refresh_{secrets.token_hex(8)}"
+        self._active_http_requests.add(request_id)
+        
+        try:
+            async with create_mcp_http_client() as http_client:
+                logger.debug("sending refresh token request to keycloak")
+                response = await http_client.post(
+                    self.settings.keycloak_token_url,
+                    data={
+                        "grant_type": "refresh_token",
+                        "client_id": self.settings.client_id,
+                        "client_secret": self.settings.client_secret,
+                        "refresh_token": keycloak_refresh_token,
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
 
-            if response.status_code != 200:
-                logger.error(f"400: {response.text}")
-                raise HTTPException(400, f"Failed to exchange code for token: {response.text}")
+                logger.info(f"keycloak refresh token response: {response.status_code}")
+                if response.status_code != 200:
+                    error_msg = f"Failed to exchange code for token: {response.text}"
+                    logger.error(error_msg)
+                    raise HTTPException(400, error_msg)
 
-            data = response.json()
-            if "error" in data:
-                logger.error(f"400: {data.get('error_description', data['error'])}")
-                raise HTTPException(400, data.get("error_description", data["error"]))
+                data = response.json()
+                if "error" in data:
+                    error_msg = data.get("error_description", data["error"])
+                    logger.error(f"keycloak refresh token error: {error_msg}")
+                    raise HTTPException(400, error_msg)
 
-            new_keycloak_access_token = data["access_token"]
-            new_keycloak_refresh_token = data["refresh_token"]
+                new_keycloak_access_token = data["access_token"]
+                new_keycloak_refresh_token = data["refresh_token"]
+                logger.debug("keycloak refresh tokens received successfully")
+        finally:
+            self._active_http_requests.discard(request_id)
+            logger.debug(f"refresh token request finished, request_id: {request_id}")
 
         self.access_token_objs[new_keycloak_access_token] = AccessToken(
             token=new_keycloak_access_token,
