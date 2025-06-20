@@ -25,7 +25,7 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.shared._httpx_utils import create_mcp_http_client
 from mostlyai.mcp.keycloak import KeycloakOAuthProvider
-from mostlyai.mcp.logging import init_logging
+from mostlyai.mcp.logger import init_logging
 
 init_logging()
 
