@@ -131,7 +131,7 @@ def create_keycloak_mcp_server(host: str, port: int) -> FastMCP:
 
 @click.command()
 @click.option("--port", default=8000, help="Port to listen on")
-@click.option("--host", default="localhost", help="Host to bind to")
+@click.option("--host", default="0.0.0.0", help="Host to bind to")
 @click.option(
     "--transport",
     default="sse",
