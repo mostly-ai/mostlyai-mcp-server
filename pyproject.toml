@@ -8,7 +8,7 @@ readme = "README.md"
 license = "Apache-2.0"
 dependencies = [
     "mostlyai>=4.7.7",
-    "fastmcp>=2.8.0",
+    "fastmcp @ git+https://github.com/mostly-ai/fastmcp.git@dev",
 ]
 
 [dependency-groups]
@@ -40,6 +40,9 @@ include = ["mostlyai/mcp"]
 
 [tool.hatch.build.targets.wheel]
 include = ["mostlyai/mcp"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [build-system]
 requires = ["hatchling"]
