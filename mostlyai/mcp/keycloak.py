@@ -134,6 +134,7 @@ class KeycloakClientSettings(BaseSettings):
 
 class KeycloakOAuthProvider(OAuthProvider):
     def __init__(self, host: str, port: int):
+        logger.info(f"initializing keycloak OAuth provider for {host}:{port}")
         # since MCP server itself is a client of Keycloak, the client root URL is the same as the MCP server public URL
         mcp_server_public_url = AnyHttpUrl(os.getenv("MCP_KEYCLOAK_CLIENT_ROOT_URL", f"http://{host}:{port}"))
         self.settings = KeycloakClientSettings(client_root_url=mcp_server_public_url)
@@ -164,17 +165,20 @@ class KeycloakOAuthProvider(OAuthProvider):
 
         # For revoking associated tokens
         self._mcp_refresh_to_mcp_access_map: dict[str, str] = {}
+        
+        logger.info("keycloak OAuth provider initialized")
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        logger.info(f"get_client: {client_id}")
+        logger.debug(f"get_client: {client_id}")
         # fetch if the client is already dynamically registered, otherwise try to fetch the static client info
         return self.clients.get(client_id, CLIENT_ID_TO_CLIENT_INFO.get(client_id))
 
     async def register_client(self, client_info: OAuthClientInformationFull):
-        logger.info(f"register_client: {client_info}")
+        logger.info(f"register_client: {client_info.client_id}")
         self.clients[client_info.client_id] = client_info
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
+        logger.info(f"authorize: client={client.client_id}")
         state = params.state or secrets.token_hex(16)
         # Store the state mapping
         self.state_mapping[state] = {
@@ -197,8 +201,11 @@ class KeycloakOAuthProvider(OAuthProvider):
         return auth_url
 
     async def handle_callback(self, code: str, state: str) -> str:
+        logger.info(f"handle_callback called")
+        
         state_data = self.state_mapping.get(state)
         if not state_data:
+            logger.error(f"invalid state parameter")
             raise HTTPException(400, "Invalid state parameter")
 
         redirect_uri = state_data["redirect_uri"]
@@ -206,6 +213,7 @@ class KeycloakOAuthProvider(OAuthProvider):
         redirect_uri_provided_explicitly = state_data["redirect_uri_provided_explicitly"] == "True"
         client_id = state_data["client_id"]
 
+        logger.info("exchanging code for token with keycloak")
         # Exchange code for token with Keycloak
         async with create_mcp_http_client() as client:
             response = await client.post(
@@ -221,11 +229,15 @@ class KeycloakOAuthProvider(OAuthProvider):
             )
 
             if response.status_code != 200:
-                raise HTTPException(400, f"Failed to exchange code for token: {response.text}")
+                error_msg = f"Failed to exchange code for token: {response.text}"
+                logger.error(error_msg)
+                raise HTTPException(400, error_msg)
 
             data = response.json()
             if "error" in data:
-                raise HTTPException(400, data.get("error_description", data["error"]))
+                error_msg = data.get("error_description", data["error"])
+                logger.error(f"keycloak token exchange error: {error_msg}")
+                raise HTTPException(400, error_msg)
 
             keycloak_access_token = data["access_token"]
             keycloak_refresh_token = data["refresh_token"]
@@ -261,7 +273,9 @@ class KeycloakOAuthProvider(OAuthProvider):
             self._auth_code_to_keycloak_refresh_map[new_code] = keycloak_refresh_token
 
         self.state_mapping.pop(state, None)
-        return construct_redirect_uri(redirect_uri, code=new_code, state=state)
+        redirect_url = construct_redirect_uri(redirect_uri, code=new_code, state=state)
+        logger.info("handle_callback successful")
+        return redirect_url
 
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
@@ -402,12 +416,12 @@ class KeycloakOAuthProvider(OAuthProvider):
             )
 
             if response.status_code != 200:
-                logger.error(f"400: {response.text}")
+                logger.error(f"keycloak refresh failed: {response.status_code}")
                 raise HTTPException(400, f"Failed to exchange code for token: {response.text}")
 
             data = response.json()
             if "error" in data:
-                logger.error(f"400: {data.get('error_description', data['error'])}")
+                logger.error(f"keycloak refresh error: {data.get('error_description', data['error'])}")
                 raise HTTPException(400, data.get("error_description", data["error"]))
 
             new_keycloak_access_token = data["access_token"]
