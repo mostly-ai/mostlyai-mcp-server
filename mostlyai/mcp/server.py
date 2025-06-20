@@ -26,6 +26,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.shared._httpx_utils import create_mcp_http_client
 from mostlyai.mcp.keycloak import KeycloakOAuthProvider
 from mostlyai.mcp.logger import init_logging
+from mostlyai.sdk import MostlyAI
 
 init_logging()
 
@@ -87,16 +88,83 @@ def create_keycloak_mcp_server(host: str, port: int) -> FastMCP:
                 raise HTTPException(400, f"Failed to send request to {endpoint}: {response.text}")
 
             return response.json()
+        
+    async def _mostly() -> MostlyAI:
+        keycloak_token = _get_keycloak_token()
+        mostly = MostlyAI(base_url=os.environ["MOSTLY_BASE_URL"], bearer_token=keycloak_token)
+        return mostly
 
     # ================ TOOLS ================
 
     @mcp.tool(description="Get the service info from Mostly AI.")
     async def get_service_info() -> dict[str, Any]:
-        return await _request("/api/v2/about")
+        mostly = await _mostly()
+        return mostly.about()
 
     @mcp.tool(description="Get the user info from Mostly AI.")
     async def get_user_info() -> dict[str, Any]:
-        return await _request("/api/v2/users/me")
+        mostly = await _mostly()
+        return mostly.me()
+
+    @mcp.tool(description="List all connectors available to the user.")
+    async def list_connectors() -> dict[str, Any]:
+        mostly = await _mostly()
+        connectors = list(mostly.connectors.list())
+        return {"connectors": connectors}
+
+    @mcp.tool(description="List all generators available to the user.")
+    async def list_generators() -> dict[str, Any]:
+        mostly = await _mostly()
+        generators = list(mostly.generators.list())
+        return {"generators": generators}
+
+    @mcp.tool(description="List all synthetic datasets available to the user.")
+    async def list_synthetic_datasets() -> dict[str, Any]:
+        mostly = await _mostly()
+        synthetics = list(mostly.synthetics.list())
+        return {"synthetic_datasets": synthetics}
+
+    @mcp.tool(description="Train a new generator on provided data. Returns the generator details.")
+    async def train_generator(
+        name: str,
+        data_url: str,
+    ) -> dict[str, Any]:
+        """Train a generator on data from a URL (CSV file)."""
+        mostly = await _mostly()
+        
+        # train a generator using the provided data URL
+        generator = await mostly.train(
+            name=name,
+            data=data_url,
+        )
+        
+        return {
+            "generator_id": generator.id,
+            "name": generator.name,
+            "status": generator.status,
+            "description": generator.description
+        }
+
+    @mcp.tool(description="Probe a generator to get synthetic samples. Returns the generated data.")
+    async def probe_generator(
+        generator_id: str,
+        size: int = 100
+    ) -> dict[str, Any]:
+        """Live probe a generator to get synthetic samples on demand."""
+        mostly = await _mostly()
+        
+        # get the generator by ID
+        generator = await mostly.generators.get(generator_id)
+        
+        # probe for synthetic samples
+        df = await mostly.probe(generator, size=size)
+        
+        # convert dataframe to dict for JSON serialization
+        return {
+            "generator_id": generator_id,
+            "sample_size": size,
+            "data": df.to_dict(orient="records") if hasattr(df, 'to_dict') else df
+        }
 
     return mcp
 

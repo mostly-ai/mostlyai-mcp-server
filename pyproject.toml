@@ -7,7 +7,7 @@ requires-python = ">=3.10,<3.13"
 readme = "README.md"
 license = "Apache-2.0"
 dependencies = [
-    "mostlyai>=4.7.7",
+    "mostlyai @ git+https://github.com/mostly-ai/mostlyai@main",
     "fastmcp @ git+https://github.com/mostly-ai/fastmcp.git@dev",
 ]
 
