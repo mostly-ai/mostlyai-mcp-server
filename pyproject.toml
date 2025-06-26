@@ -1,0 +1,59 @@
+[project]
+name = "mostlyai-mcp-server"
+version = "0.1.0"
+description = "Mostly AI MCP Server"
+authors = [{ name = "MOSTLY AI", email = "dev@mostly.ai" }]
+requires-python = ">=3.10,<3.13"
+readme = "README.md"
+license = "Apache-2.0"
+dependencies = [
+    "mostlyai>=4.7.8",
+    "fastmcp @ git+https://github.com/mostly-ai/fastmcp.git@dev",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff==0.11.6",  # sync'ed with .pre-commit-config
+    "pre-commit>=4.0",
+    "twine>=6.1",
+    "ipykernel>=6.25",
+    "respx>=0.20",
+    "httpx>=0.27",
+]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocstrings[crystal, python]>=0.29",
+    "mkdocs-material>=9.0",
+    "mkdocs-llmstxt>=0.2",
+    "griffe>=1.0",
+    "pymdown-extensions>=10.0",
+    "griffe-fieldz>=0.2",
+    "black>=25.0",
+]
+
+[project.scripts]
+mostlyai-mcp-server = "mostlyai.mcp.server:main"
+
+[tool.hatch.build.targets.sdist]
+include = ["mostlyai/mcp"]
+
+[tool.hatch.build.targets.wheel]
+include = ["mostlyai/mcp"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
+[tool.ruff.lint.per-file-ignores]
+"*.ipynb" = ["E402"]
