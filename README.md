@@ -1,7 +1,7 @@
 # MOSTLY AI MCP Server
 
-![license](https://img.shields.io/github/license/mostly-ai/mostly-mcp-server)
-[![GitHub stars](https://img.shields.io/github/stars/mostly-ai/mostly-mcp-server?style=social)](https://github.com/mostly-ai/mostly-mcp-server/stargazers)
+![license](https://img.shields.io/github/license/mostly-ai/mostlyai-mcp-server)
+[![GitHub stars](https://img.shields.io/github/stars/mostly-ai/mostly-mcp-server?style=social)](https://github.com/mostly-ai/mostlyai-mcp-server/stargazers)
 
 A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server with OAuth 2.1 support for LLM agents to interact with the [MOSTLY AI Platform](https://app.mostly.ai).
 
@@ -24,7 +24,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server with OA
 | `list_generators` | list all available generators |
 | `get_generator` | get details of a specific generator |
 | `train_generator` | train a new generator with provided data or configuration |
-| `generator_clone` | clone an existing generator |
+| `clone_generator` | clone an existing generator |
 | `generate_synthetic_dataset` | generate a synthetic dataset using a generator |
 | `list_synthetic_datasets` | list all available synthetic datasets |
 | `probe_generator` | probe a generator for a new synthetic dataset (quick sample) |
@@ -48,10 +48,10 @@ An MCP host that supports the latest MCP specification and remote servers, such 
 
   **<summary>VS Code (>= v1.101)</summary>**
 
-  [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF)](https://insiders.vscode.dev/redirect/mcp/install?name=mostlyai&config=%7B%22type%22%3A%20%22sse%22%2C%22url%22%3A%20%22https%3A%2F%2Fmcp.mostly.ai%2Fsse%2F%22%7D)
+  [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF)](https://insiders.vscode.dev/redirect/mcp/install?name=mostlyai&config=%7B%22url%22%3A%20%22https%3A%2F%2Fmcp.mostly.ai%2Fsse%22%7D)
 
 For quick installation, please use the one-click button above.
-Alternatively, one can add the following JSON to `.vscode/mcp.json` in the project folder.
+Alternatively, one can add the following JSON to `.vscode/mcp.json` (for the workspace) or the global `settings.json` (for the user).
 
 ```json
 {

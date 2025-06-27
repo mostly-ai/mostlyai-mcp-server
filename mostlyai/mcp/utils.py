@@ -14,12 +14,18 @@
 
 import json
 import re
+import time
+from collections.abc import Callable
 
 import pandas as pd
 import requests
+from fastmcp import Context
+
+from mostlyai.sdk.domain import ProgressStatus, TaskType
 
 _DOC_CACHE = {}
 DF_AS_DICT_MAX_ROWS = 100
+PROGRESS_INTERVAL_SECONDS = 1
 
 
 def doc_section(starts_with: str, doc_url="https://mostly-ai.github.io/mostlyai/llms-full.txt") -> str:
@@ -57,3 +63,54 @@ def df_as_dict(obj):
     if isinstance(obj, dict):
         return {k: df_as_dict(v) for k, v in obj.items()}
     return obj
+
+
+async def job_wait(ctx: Context, get_progress_fn: Callable, progress_bar: bool = True) -> None:
+    """
+    Similar to mostlyai.sdk.client._utils.job_wait, but for MCP.
+    """
+
+    job_progress = get_progress_fn()
+    task_type = job_progress.steps[0].task_type
+    while job_progress.status not in [ProgressStatus.done, ProgressStatus.failed, ProgressStatus.canceled]:
+        if progress_bar:
+            job_progress_value = job_progress.progress.value
+            job_progress_max = job_progress.progress.max
+            job_progress_percentage = (
+                float(job_progress_value) / job_progress_max * 100.0 if job_progress_max > 0 else 0.0
+            )
+            if job_progress.status == ProgressStatus.queued:
+                await ctx.report_progress(
+                    progress=job_progress_value,
+                    total=job_progress_max,
+                    message=f"Your {'synthetic dataset' if task_type == TaskType.generate else 'generator'} is queued. Please wait...",
+                )
+            else:
+                for step in job_progress.steps:
+                    if step.status not in [ProgressStatus.done, ProgressStatus.failed, ProgressStatus.canceled]:
+                        step_progress_value = step.progress.value
+                        step_progress_max = step.progress.max
+                        step_progress_percentage = (
+                            float(step_progress_value) / step_progress_max * 100.0 if step_progress_max > 0 else 0.0
+                        )
+                        await ctx.report_progress(
+                            progress=job_progress_value,
+                            total=job_progress_max,
+                            message=f"[{job_progress_percentage:3.0f}%] {step.model_label} - {step.step_code.value}: {step_progress_percentage:3.0f}%",
+                        )
+                        break
+        time.sleep(PROGRESS_INTERVAL_SECONDS)
+        job_progress = get_progress_fn()
+
+    if progress_bar:
+        if job_progress.status == ProgressStatus.done:
+            message = f"🎉 Your {'synthetic dataset' if task_type == TaskType.generate else 'generator'} is ready!"
+        elif job_progress.status == ProgressStatus.failed:
+            message = f"{'Generation' if task_type == TaskType.generate else 'Training'} failed."
+        elif job_progress.status == ProgressStatus.canceled:
+            message = f"{'Generation' if task_type == TaskType.generate else 'Training'} was canceled."
+        await ctx.report_progress(
+            progress=job_progress_max,
+            total=job_progress_max,
+            message=message,
+        )

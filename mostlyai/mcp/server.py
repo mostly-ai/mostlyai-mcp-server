@@ -270,21 +270,25 @@ def create_keycloak_mcp_server(host: str, port: int) -> FastMCP:
         data: str | None = None,
         name: str | None = None,
         start: bool = True,
-        wait: bool = False,
-        progress_bar: bool = False,
+        wait: bool = False,  # no effect yet
+        progress_bar: bool = False,  # no effect yet
     ) -> Generator | dict:
         async with _mostly(ctx) as mostly:
-            return mostly.train(
+            g = mostly.train(
                 config=config,
                 data=data,
                 name=name,
                 start=start,
-                wait=wait,
-                progress_bar=progress_bar,
+                wait=False,
+                progress_bar=False,
             )
+            # if wait:
+            #    await job_wait(ctx=ctx, get_progress_fn=g.training.progress, progress_bar=progress_bar)
+            #     g.reload()
+            return g
 
     @mcp.tool(description=doc_section("##### clone"))
-    async def generator_clone(
+    async def clone_generator(
         ctx: Context,
         generator_id: str,
         training_status: str = "pending",
@@ -303,9 +307,11 @@ def create_keycloak_mcp_server(host: str, port: int) -> FastMCP:
         seed: dict | None = None,
         name: str | None = None,
         start: bool = True,
+        wait: bool = False,  # no effect yet
+        progress_bar: bool = False,  # no effect yet
     ) -> SyntheticDataset | dict:
         async with _mostly(ctx) as mostly:
-            return mostly.generate(
+            sd = mostly.generate(
                 generator=generator,
                 config=config,
                 size=size,
@@ -315,6 +321,10 @@ def create_keycloak_mcp_server(host: str, port: int) -> FastMCP:
                 wait=False,
                 progress_bar=False,
             )
+            # if wait:
+            #    await job_wait(ctx=ctx, get_progress_fn=sd.generation.progress, progress_bar=progress_bar)
+            #    sd.reload()
+            return sd
 
     @mcp.tool(
         description=doc_section(r"### mostlyai.sdk.client.synthetic_datasets.\_MostlySyntheticDatasetsClient.list")
