@@ -13,19 +13,39 @@
 # limitations under the License.
 
 import json
+import logging
 import re
 import time
 from collections.abc import Callable
 
 import pandas as pd
 import requests
+import uvicorn
+from fastapi import FastAPI
 from fastmcp import Context
 
+from mostlyai.sdk.client.exceptions import APIStatusError
 from mostlyai.sdk.domain import ProgressStatus, TaskType
 
 _DOC_CACHE = {}
 DF_AS_DICT_MAX_ROWS = 100
-PROGRESS_INTERVAL_SECONDS = 1
+JOB_WAIT_INTERVAL_SECONDS = 1
+JOB_WAIT_TIMEOUT_SECONDS = 60
+
+logger = logging.getLogger(__name__)
+
+
+def run_healthcheck_server(host: str = "0.0.0.0", port: int = 8001):
+    health_app = FastAPI()
+
+    @health_app.get("/health")
+    def health_check():
+        return {"status": "healthy"}
+
+    # Run the healthcheck server with worker configuration
+    config = uvicorn.Config(app=health_app, host=host, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    server.run()
 
 
 def doc_section(starts_with: str, doc_url="https://mostly-ai.github.io/mostlyai/llms-full.txt") -> str:
@@ -65,17 +85,17 @@ def df_as_dict(obj):
     return obj
 
 
-async def job_wait(ctx: Context, get_progress_fn: Callable, progress_bar: bool = True) -> None:
+async def job_wait(ctx: Context, progress_fn: Callable) -> None:
     """
     Similar to mostlyai.sdk.client._utils.job_wait, but for MCP.
     """
-
-    job_progress = get_progress_fn()
-    task_type = job_progress.steps[0].task_type
-    while job_progress.status not in [ProgressStatus.done, ProgressStatus.failed, ProgressStatus.canceled]:
-        if progress_bar:
-            job_progress_value = job_progress.progress.value
-            job_progress_max = job_progress.progress.max
+    t0 = time.time()
+    try:
+        job_progress = progress_fn()
+        job_progress_value = job_progress.progress.value
+        job_progress_max = job_progress.progress.max
+        task_type = job_progress.steps[0].task_type
+        while job_progress.status not in [ProgressStatus.done, ProgressStatus.failed, ProgressStatus.canceled]:
             job_progress_percentage = (
                 float(job_progress_value) / job_progress_max * 100.0 if job_progress_max > 0 else 0.0
             )
@@ -99,10 +119,13 @@ async def job_wait(ctx: Context, get_progress_fn: Callable, progress_bar: bool =
                             message=f"[{job_progress_percentage:3.0f}%] {step.model_label} - {step.step_code.value}: {step_progress_percentage:3.0f}%",
                         )
                         break
-        time.sleep(PROGRESS_INTERVAL_SECONDS)
-        job_progress = get_progress_fn()
+            time.sleep(JOB_WAIT_INTERVAL_SECONDS)
+            if time.time() - t0 > JOB_WAIT_TIMEOUT_SECONDS:
+                raise Exception("job_wait() timed out.")
+            job_progress = progress_fn()
+            job_progress_value = job_progress.progress.value
+            job_progress_max = job_progress.progress.max
 
-    if progress_bar:
         if job_progress.status == ProgressStatus.done:
             message = f"🎉 Your {'synthetic dataset' if task_type == TaskType.generate else 'generator'} is ready!"
         elif job_progress.status == ProgressStatus.failed:
@@ -114,3 +137,7 @@ async def job_wait(ctx: Context, get_progress_fn: Callable, progress_bar: bool =
             total=job_progress_max,
             message=message,
         )
+    except APIStatusError as e:
+        if "401" in e.message:
+            raise Exception("Token expired during job_wait().")
+        raise e

@@ -14,6 +14,7 @@
 
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
@@ -21,12 +22,14 @@ import click
 import pandas as pd
 from fastmcp import Context, FastMCP
 from starlette.exceptions import HTTPException
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from mostlyai.mcp.keycloak import KeycloakOAuthProvider
 from mostlyai.mcp.logger import init_logging
-from mostlyai.mcp.utils import df_as_dict, doc_section
+from mostlyai.mcp.prometheus_utils import PrometheusMiddleware, metrics
+from mostlyai.mcp.utils import df_as_dict, doc_section, job_wait, run_healthcheck_server
 from mostlyai.sdk import MostlyAI
 from mostlyai.sdk.domain import (
     AboutService,
@@ -44,17 +47,31 @@ init_logging()
 logger = logging.getLogger(__name__)
 
 DEFAULT_AUTH_CODE_EXPIRY_SECONDS = 5 * 60  # 5 minutes
-DEFAULT_ACCESS_TOKEN_EXPIRY_SECONDS = 1 * 60  # 1 minutes
+DEFAULT_ACCESS_TOKEN_EXPIRY_SECONDS = 5 * 60  # 5 minutes
 DEFAULT_REFRESH_TOKEN_EXPIRY_SECONDS = 15 * 60  # 15 minutes
+
+
+def _get_keycloak_token(ctx: Context, auth: KeycloakOAuthProvider) -> str:
+    # FIXME: for some reason, the token in the auth context is not up to date during CallToolRequest
+    # therefore mcp.server.auth.middleware.auth_context.get_access_token may not work all the time
+    # this is a workaround to get the token from the request context, which seems to be more reliable
+    try:
+        request_context = ctx.request_context
+        mcp_token = request_context.request.headers["Authorization"].split(" ")[1]
+    except Exception:
+        raise ValueError("Unauthorized: no MCP token found")
+
+    keycloak_token = auth._mcp_access_to_keycloak_access_map.get(mcp_token)
+    if not keycloak_token:
+        raise ValueError("Unauthorized: invalid or expired MCP token")
+
+    return keycloak_token
 
 
 def create_keycloak_mcp_server(host: str, port: int) -> FastMCP:
     auth = KeycloakOAuthProvider(host=host, port=port)
     mcp = FastMCP(name="Mostly AI MCP Server", auth=auth)
-
-    @mcp.custom_route("/health", methods=["GET"])
-    async def health_check(request: Request) -> Response:
-        return Response(status_code=200)
+    mcp.custom_route("/metrics", methods=["GET"])(metrics)
 
     @mcp.custom_route("/oauth/callback", methods=["GET"])
     async def oauth_callback_handler(request: Request) -> Response:
@@ -78,26 +95,10 @@ def create_keycloak_mcp_server(host: str, port: int) -> FastMCP:
             logger.exception("Error in OAuth callback")
             return JSONResponse({"error": "Internal server error"}, status_code=500)
 
-    def _get_keycloak_token(ctx: Context) -> str:
-        # FIXME: for some reason, the token in the auth context is not up to date during CallToolRequest
-        # therefore mcp.server.auth.middleware.auth_context.get_access_token may not work all the time
-        # this is a workaround to get the token from the request context, which seems to be more reliable
-        try:
-            request_context = ctx.request_context
-            mcp_token = request_context.request.headers["Authorization"].split(" ")[1]
-        except Exception:
-            raise ValueError("Unauthorized: no MCP token found")
-
-        keycloak_token = auth._mcp_access_to_keycloak_access_map.get(mcp_token)
-        if not keycloak_token:
-            raise ValueError("Unauthorized: invalid or expired MCP token")
-
-        return keycloak_token
-
     @asynccontextmanager
     async def _mostly(ctx: Context):
         try:
-            keycloak_token = _get_keycloak_token(ctx)
+            keycloak_token = _get_keycloak_token(ctx, auth)
             mostly = MostlyAI(base_url=os.environ["MOSTLY_BASE_URL"], bearer_token=keycloak_token, quiet=True)
             yield mostly
         except Exception as e:
@@ -263,6 +264,14 @@ def create_keycloak_mcp_server(host: str, port: int) -> FastMCP:
         async with _mostly(ctx) as mostly:
             return mostly.generators.get(generator_id)
 
+    @mcp.tool(description="Poll and continue monitoring the progress of an ongoing generator training job.")
+    async def poll_generator_progress(
+        ctx: Context,
+        generator_id: str,
+    ) -> Generator | dict:
+        async with _mostly(ctx) as mostly:
+            return await _poll_job_progress(ctx, mostly.generators.get(generator_id))
+
     @mcp.tool(description=doc_section("### mostlyai.sdk.client.api.MostlyAI.train"))
     async def train_generator(
         ctx: Context,
@@ -270,8 +279,8 @@ def create_keycloak_mcp_server(host: str, port: int) -> FastMCP:
         data: str | None = None,
         name: str | None = None,
         start: bool = True,
-        wait: bool = False,  # no effect yet
-        progress_bar: bool = False,  # no effect yet
+        wait: bool = False,
+        progress_bar: bool = True,  # no effect, just for keeping the signature consistent with the description
     ) -> Generator | dict:
         async with _mostly(ctx) as mostly:
             g = mostly.train(
@@ -279,12 +288,10 @@ def create_keycloak_mcp_server(host: str, port: int) -> FastMCP:
                 data=data,
                 name=name,
                 start=start,
-                wait=False,
-                progress_bar=False,
+                wait=False,  # MCP server has its own job_wait() function, so we don't need to wait here
             )
-            # if wait:
-            #    await job_wait(ctx=ctx, get_progress_fn=g.training.progress, progress_bar=progress_bar)
-            #     g.reload()
+            if wait:
+                g = await _poll_job_progress(ctx, g)
             return g
 
     @mcp.tool(description=doc_section("##### clone"))
@@ -298,6 +305,24 @@ def create_keycloak_mcp_server(host: str, port: int) -> FastMCP:
 
     # --- Synthetic Datasets ---
 
+    @mcp.tool(
+        description=doc_section(r"### mostlyai.sdk.client.synthetic_datasets.\_MostlySyntheticDatasetsClient.get")
+    )
+    async def get_synthetic_dataset(
+        ctx: Context,
+        synthetic_dataset_id: str,
+    ) -> SyntheticDataset | dict:
+        async with _mostly(ctx) as mostly:
+            return mostly.synthetic_datasets.get(synthetic_dataset_id)
+
+    @mcp.tool(description="Poll and continue monitoring the progress of an ongoing synthetic dataset generation job.")
+    async def poll_synthetic_dataset_progress(
+        ctx: Context,
+        synthetic_dataset_id: str,
+    ) -> SyntheticDataset | dict:
+        async with _mostly(ctx) as mostly:
+            return await _poll_job_progress(ctx, mostly.synthetic_datasets.get(synthetic_dataset_id))
+
     @mcp.tool(description=doc_section("### mostlyai.sdk.client.api.MostlyAI.generate"))
     async def generate_synthetic_dataset(
         ctx: Context,
@@ -307,8 +332,8 @@ def create_keycloak_mcp_server(host: str, port: int) -> FastMCP:
         seed: dict | None = None,
         name: str | None = None,
         start: bool = True,
-        wait: bool = False,  # no effect yet
-        progress_bar: bool = False,  # no effect yet
+        wait: bool = False,
+        progress_bar: bool = True,  # no effect, just for keeping the signature consistent with the description
     ) -> SyntheticDataset | dict:
         async with _mostly(ctx) as mostly:
             sd = mostly.generate(
@@ -318,12 +343,10 @@ def create_keycloak_mcp_server(host: str, port: int) -> FastMCP:
                 seed=seed,
                 name=name,
                 start=start,
-                wait=False,
-                progress_bar=False,
+                wait=False,  # MCP server has its own job_wait() function, so we don't need to wait here
             )
-            # if wait:
-            #    await job_wait(ctx=ctx, get_progress_fn=sd.generation.progress, progress_bar=progress_bar)
-            #    sd.reload()
+            if wait:
+                sd = await _poll_job_progress(ctx, sd)
             return sd
 
     @mcp.tool(
@@ -375,21 +398,57 @@ def create_keycloak_mcp_server(host: str, port: int) -> FastMCP:
             )
             return df_as_dict(result)
 
+    # --- private functions shared between tools ---
+    async def _poll_job_progress(ctx: Context, job_obj: Generator | SyntheticDataset) -> Generator | SyntheticDataset:
+        try:
+            job_type = "generator" if isinstance(job_obj, Generator) else "synthetic_dataset"
+            progress_fn = job_obj.training.progress if isinstance(job_obj, Generator) else job_obj.generation.progress
+            await job_wait(ctx=ctx, progress_fn=progress_fn)
+            job_obj.reload()
+            return job_obj
+        except Exception as e:
+            if any(keyword in str(e).lower() for keyword in ["timed out", "token expired"]):
+                raise Exception(
+                    f"Timed out or token expired. Call `poll_{job_type}_progress` tool again to continue monitoring the progress of ID {job_obj.id}."
+                )
+            raise e
+
     return mcp
 
 
 @click.command()
-@click.option("--port", default=8000, help="Port to listen on")
-@click.option("--host", default="localhost", help="Host to bind to")
+@click.option("--port", default=8000, help="Port to listen on (will be overwritten by FASTMCP_PORT env var if set)")
+@click.option(
+    "--host", default="localhost", help="Host to bind to (will be overwritten by FASTMCP_HOST env var if set)"
+)
 @click.option(
     "--transport",
     default="sse",
     type=click.Choice(["sse", "streamable-http"]),
     help="Transport protocol to use ('sse' or 'streamable-http')",
 )
-def main(port: int, host: str, transport: Literal["sse", "streamable-http"]) -> None:
+@click.option("--num-workers", default=4, help="Number of workers to run")
+def main(port: int, host: str, transport: Literal["sse", "streamable-http"], num_workers: int) -> None:
+    # start healthcheck server on a separate thread (e.g., on port+1)
+    port = int(os.environ.get("FASTMCP_PORT", port))
+    host = os.environ.get("FASTMCP_HOST", host)
+    healthcheck_thread = threading.Thread(
+        target=run_healthcheck_server,
+        kwargs={"host": host, "port": int(port) + 1},
+        daemon=True,
+    )
+    healthcheck_thread.start()
+
+    # start the main MCP server
     mcp = create_keycloak_mcp_server(host=host, port=port)
-    mcp.run(transport=transport, log_level="debug")
+    mcp.run(
+        transport=transport,
+        log_level="debug",
+        middleware=[
+            Middleware(PrometheusMiddleware, application="mostly-mcp-server"),
+        ],
+        uvicorn_config={"workers": num_workers},
+    )
 
 
 if __name__ == "__main__":

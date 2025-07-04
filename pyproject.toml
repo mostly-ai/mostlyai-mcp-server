@@ -8,18 +8,21 @@ readme = "README.md"
 license = "Apache-2.0"
 dependencies = [
     "mostlyai>=4.7.8",
+    "fastapi>=0.115.6,<0.116",
     "fastmcp @ git+https://github.com/mostly-ai/fastmcp.git@dev",
+    "prometheus-client>=0.22.1",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
-    "ruff==0.11.6",  # sync'ed with .pre-commit-config
+    "ruff==0.11.6", # sync'ed with .pre-commit-config
     "pre-commit>=4.0",
     "twine>=6.1",
     "ipykernel>=6.25",
     "respx>=0.20",
     "httpx>=0.27",
+    "pytest-asyncio>=1.0.0",
 ]
 docs = [
     "mkdocs>=1.6",

@@ -23,8 +23,11 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server with OA
 | `query_connector` | execute a read-only SQL query against a connector's data source |
 | `list_generators` | list all available generators |
 | `get_generator` | get details of a specific generator |
+| `poll_generator_progress` | poll progress of a generator training job |
 | `train_generator` | train a new generator with provided data or configuration |
 | `clone_generator` | clone an existing generator |
+| `get_synthetic_dataset` | get details of a specific synthetic dataset |
+| `poll_synthetic_dataset_progress` | poll progress of a synthetic dataset generation job |
 | `generate_synthetic_dataset` | generate a synthetic dataset using a generator |
 | `list_synthetic_datasets` | list all available synthetic datasets |
 | `probe_generator` | probe a generator for a new synthetic dataset (quick sample) |
